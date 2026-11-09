@@ -37,12 +37,9 @@ const CABECALHOS = [
   'Categoria',
   'Meio de Pagamento',
   'Valor (R$)',
-  'Pagador',
-  'Recebedor',
+  'Pagador (Recebidos)',
   'Banco / Instituição',
   'ID / Autenticação',
-  'Nome Contato (WhatsApp)',
-  'Telefone Remetente',
   'Data/Hora Registro',
   'Link do Comprovante',
 ];
@@ -159,12 +156,14 @@ function doPost(e) {
       sheet.appendRow(CABECALHOS);
       sheet.getRange(1, 1, 1, CABECALHOS.length).setFontWeight('bold');
     } else {
-      // Atualiza cabeçalhos na linha 1 caso tenham mudado
       sheet
         .getRange(1, 1, 1, CABECALHOS.length)
         .setValues([CABECALHOS])
         .setFontWeight('bold');
     }
+
+    const pagadorRecebidos =
+      d.tipo_lancamento === 'Recebidos' ? d.pagador || '' : '';
 
     // 3. Adiciona a linha com os dados completos do lançamento
     sheet.appendRow([
@@ -177,12 +176,9 @@ function doPost(e) {
       d.valor !== null && d.valor !== undefined
         ? d.valor
         : d.valor_formatado || 'Não identificado',
-      d.pagador || 'Não identificado',
-      d.recebedor || 'Não identificado',
+      pagadorRecebidos,
       d.instituicao || 'Não identificada',
       d.id_transacao || 'Não identificado',
-      d.senderName || '',
-      d.senderPhone || '',
       d.receivedAt || new Date().toLocaleString('pt-BR'),
       driveUrl,
     ]);

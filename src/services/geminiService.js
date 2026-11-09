@@ -7,21 +7,19 @@ if (config.gemini.apiKey) {
 }
 
 const PROMPT_COMPROVANTE = `
-Você é um assistente especialista em análise de comprovantes financeiros, notas fiscais e cupons fiscais brasileiros.
+Você é um assistente especialista em análise de comprovantes financeiros, notas fiscais e cupons fiscais brasileiros para controle financeiro pessoal.
 Analise a imagem/documento enviado e retorne APENAS um objeto JSON válido (sem blocos markdown) com a seguinte estrutura exata:
 
 {
   "eh_comprovante": true ou false,
   "tipo_lancamento": "Recebidos" | "Gastos" | "Investimentos",
   "categoria": "Matéria-prima" | "Transporte" | "Alimentação" | "Outros",
-  "motivo_deducao": "Breve explicação de como deduziu o tipo e a categoria pelo estabelecimento/comprovante",
   "tipo_transacao": "Pix" | "Cartão de crédito" | "Cartão de débito" | "Transferência" | "Boleto" | "Cédula" | "Outro",
   "valor": número decimal (ex: 150.50) ou null se não identificado,
   "valor_formatado": "R$ 150,50" ou "Não identificado",
   "data_pagamento": "DD/MM/AAAA" ou "Não identificada",
   "hora_pagamento": "HH:MM" ou "",
-  "pagador": "Nome de quem pagou" ou "Não identificado",
-  "recebedor": "Nome de quem recebeu / estabelecimento" ou "Não identificado",
+  "pagador": "Nome de quem enviou o valor (APENAS se tipo_lancamento for 'Recebidos', caso contrário retorne string vazia '')",
   "instituicao": "Banco ou instituição financeira" ou "Não identificada",
   "id_transacao": "Código E2E do PIX / Autenticação / Chave de acesso" ou "Não identificado",
   "resumo": "Breve descrição em 1 frase"
@@ -32,18 +30,21 @@ Regras importantes para dedução inteligente:
    - Use "Recebidos" se o comprovante indicar "Pix recebido", "Transferência recebida", "Depósito recebido", ou quando o titular Marcos (ex: "Marcos Santos" / "Marcos dos Santos Pinheiro") figurar como RECEBEDOR/DESTINATÁRIO do dinheiro.
    - Use "Investimentos" se o comprovante for de aplicação financeira, CDB, RDB, Tesouro Direto, Caixinha, Poupança, Ações, Fundos Imobiliários, Corretora ou Criptomoedas.
    - Use "Gastos" para pagamentos efetuados, compras no cartão, Pix enviados, boletos pagos ou cupons/notas fiscais de consumo.
-2. "categoria" (deduza pelo nome/ramo de atividade do estabelecimento recebedor ou pelos itens da nota):
+2. "pagador":
+   - Preencha SOMENTE quando "tipo_lancamento" for "Recebidos" (indicando quem enviou/pagou o valor para o usuário, ex: no comprovante "DE: Fulano de Tal", o pagador é "Fulano de Tal").
+   - Se "tipo_lancamento" for "Gastos" ou "Investimentos", deixe "pagador": "".
+3. "categoria" (deduza pelo estabelecimento/contexto no comprovante):
    - "Alimentação": Restaurantes, padarias, supermercados, mercados, lanchonetes, iFood, cafés, açougues, docerias, pizzarias, distribuidoras de alimentos/bebidas.
    - "Transporte": Postos de combustível, Uber, 99, táxi, estacionamentos, pedágios, oficinas mecânicas, autopeças, passagens aéreas/rodoviárias, transporte/frete.
    - "Matéria-prima": Insumos de produção, embalagens, papelaria técnica/gráfica, tecidos, materiais de fabricação, fornecedores de insumos ou atacado de materiais.
-   - "Outros": Demais estabelecimentos (vestuário, fotos/eventos, saúde/farmácia, serviços, assinaturas, transferências para pessoas físicas sem ramo específico, etc.).
-3. Em "data_pagamento", extraia a DATA REAL em que o pagamento/compra ocorreu no formato DD/MM/AAAA (ex: "23/03/2026"). Se o ano tiver 2 dígitos (ex: 23/03/26), converta para 4 dígitos ("23/03/2026").
-4. Se a imagem NÃO for um comprovante de pagamento, recibo, cupom ou nota fiscal, defina "eh_comprovante": false.
+   - "Outros": Demais casos (vestuário, fotos/eventos, saúde/farmácia, serviços, assinaturas, recebimentos gerais, etc.).
+4. Em "data_pagamento", extraia a DATA REAL em que o pagamento/compra ocorreu no formato DD/MM/AAAA (ex: "23/03/2026"). Se o ano tiver 2 dígitos (ex: 23/03/26), converta para 4 dígitos ("23/03/2026").
+5. Se a imagem NÃO for um comprovante de pagamento, recibo, cupom ou nota fiscal, defina "eh_comprovante": false.
 `;
 
 /**
  * Analisa um buffer de imagem ou PDF usando o Google Gemini Vision,
- * deduzindo automaticamente Tipo (Recebidos/Gastos/Investimentos) e Categoria pelo estabelecimento!
+ * deduzindo automaticamente Tipo (Recebidos/Gastos/Investimentos) e Categoria!
  *
  * @param {Buffer} fileBuffer Buffer do arquivo recebido no WhatsApp
  * @param {string} mimeType Tipo MIME (ex: image/jpeg, image/png, application/pdf)
@@ -55,7 +56,6 @@ async function analyzeReceipt(fileBuffer, mimeType = 'image/jpeg') {
       eh_comprovante: true,
       tipo_lancamento: 'Gastos',
       categoria: 'Outros',
-      motivo_deducao: 'Chave Gemini não configurada',
       tipo_transacao: 'Outro',
       valor: null,
       valor_formatado: 'Não identificado',
@@ -64,8 +64,7 @@ async function analyzeReceipt(fileBuffer, mimeType = 'image/jpeg') {
         hour: '2-digit',
         minute: '2-digit',
       }),
-      pagador: 'Não identificado',
-      recebedor: 'Não identificado',
+      pagador: '',
       instituicao: 'Não identificada',
       id_transacao: 'Não identificado',
       resumo: 'Chave Gemini não configurada',
@@ -96,19 +95,19 @@ async function analyzeReceipt(fileBuffer, mimeType = 'image/jpeg') {
       .replace(/\s*```$/, '');
 
     const parsed = JSON.parse(cleanedJson);
+    const tipoLancamento = parsed.tipo_lancamento || 'Gastos';
+
     return {
       eh_comprovante: parsed.eh_comprovante ?? true,
-      tipo_lancamento: parsed.tipo_lancamento || 'Gastos',
+      tipo_lancamento: tipoLancamento,
       categoria: parsed.categoria || 'Outros',
-      motivo_deducao: parsed.motivo_deducao || '',
       tipo_transacao: parsed.tipo_transacao || 'Outro',
       valor: parsed.valor ?? null,
       valor_formatado: parsed.valor_formatado || 'Não identificado',
       data_pagamento:
         parsed.data_pagamento || new Date().toLocaleDateString('pt-BR'),
       hora_pagamento: parsed.hora_pagamento || '',
-      pagador: parsed.pagador || 'Não identificado',
-      recebedor: parsed.recebedor || 'Não identificado',
+      pagador: tipoLancamento === 'Recebidos' ? parsed.pagador || '' : '',
       instituicao: parsed.instituicao || 'Não identificada',
       id_transacao: parsed.id_transacao || 'Não identificado',
       resumo: parsed.resumo || '',
@@ -119,14 +118,12 @@ async function analyzeReceipt(fileBuffer, mimeType = 'image/jpeg') {
       eh_comprovante: true,
       tipo_lancamento: 'Gastos',
       categoria: 'Outros',
-      motivo_deducao: '',
       tipo_transacao: 'Outro',
       valor: null,
       valor_formatado: 'Não identificado',
       data_pagamento: 'Não identificada',
       hora_pagamento: '',
-      pagador: 'Não identificado',
-      recebedor: 'Não identificado',
+      pagador: '',
       instituicao: 'Não identificada',
       id_transacao: 'Não identificado',
       resumo: `Falha na extração automática: ${error.message}`,
@@ -136,7 +133,7 @@ async function analyzeReceipt(fileBuffer, mimeType = 'image/jpeg') {
 
 /**
  * Interpreta a resposta do usuário na etapa de confirmação de valor/dados.
- * Permite confirmar com 1 comando ou alterar Tipo, Categoria, Valor, Data, Meio de pagamento, etc.
+ * Permite confirmar com 1 comando ou alterar Tipo, Categoria, Valor, Data, Meio de pagamento, ou Pagador (quando for Recebidos).
  */
 async function interpretConfirmationReply(userText, currentData) {
   const trimmed = userText.trim();
@@ -207,7 +204,7 @@ async function interpretConfirmationReply(userText, currentData) {
     }
   }
 
-  // 4. Usa o Gemini para interpretar correções em linguagem natural (Tipo, Categoria, Valor, Data, Recebedor...)
+  // 4. Usa o Gemini para interpretar correções em linguagem natural
   if (!genAI) {
     return {
       acao: 'CONVERSAR',
@@ -226,7 +223,7 @@ async function interpretConfirmationReply(userText, currentData) {
     });
 
     const prompt = `
-Você é um assistente financeiro no WhatsApp ajudando a revisar os dados de um comprovante antes de salvar.
+Você é um assistente financeiro pessoal no WhatsApp ajudando a revisar os dados de um comprovante antes de salvar.
 
 Dados atuais do comprovante:
 ${JSON.stringify(currentData, null, 2)}
@@ -245,15 +242,15 @@ Retorne APENAS um JSON válido com a estrutura:
     "valor_formatado": "R$ ...",
     "data_pagamento": "DD/MM/AAAA",
     "hora_pagamento": "HH:MM",
-    "pagador": "...",
-    "recebedor": "...",
+    "pagador": "Nome de quem enviou o valor (APENAS se tipo_lancamento for 'Recebidos', senão '')",
     "instituicao": "..."
   },
   "resposta_bot": "Mensagem curta em português"
 }
 
 Regras:
-- Se o usuário corrigiu o tipo (ex: "é recebido", "foi investimento", "é gasto"), a categoria (ex: "categoria transporte", "é matéria-prima", "alimentação"), o valor, a data ou o recebedor, atualize os campos correspondentes em "dados_atualizados" e use "EDITAR" (ou "CONFIRMAR" se ele também pediu para salvar).
+- Se o usuário corrigiu o tipo (ex: "é recebido", "foi investimento", "é gasto"), a categoria (ex: "categoria transporte", "é matéria-prima", "alimentação"), o valor, a data ou quem enviou o valor ("pagador: Fulano" / "quem enviou foi Ciclano"), atualize os campos correspondentes em "dados_atualizados" e use "EDITAR" (ou "CONFIRMAR" se ele também pediu para salvar).
+- Se "tipo_lancamento" não for "Recebidos", "pagador" deve ser "".
 - Sempre mantenha "data_pagamento" no formato DD/MM/AAAA.
 `;
 
@@ -266,9 +263,14 @@ Regras:
       .replace(/\s*```$/, '');
 
     const parsed = JSON.parse(cleanedJson);
+    const merged = { ...currentData, ...(parsed.dados_atualizados || {}) };
+    if (merged.tipo_lancamento !== 'Recebidos') {
+      merged.pagador = '';
+    }
+
     return {
       acao: parsed.acao || 'CONVERSAR',
-      dados_atualizados: { ...currentData, ...(parsed.dados_atualizados || {}) },
+      dados_atualizados: merged,
       resposta_bot:
         parsed.resposta_bot ||
         'Digite *Confirmar* para salvar ou *Cancelar* para descartar.',

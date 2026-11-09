@@ -156,29 +156,32 @@ function extractTextMessage(msgContent) {
 }
 
 /**
- * Formata o número do remetente (ex: 5511999999999@s.whatsapp.net -> +5511999999999).
- */
-function formatPhoneNumber(jid) {
-  if (!jid) return 'Desconhecido';
-  const raw = jid.split('@')[0].split(':')[0];
-  return `+${raw}`;
-}
-
-/**
- * Monta a pergunta de confirmação de valor e data após a categoria ser escolhida.
+ * Monta a mensagem de confirmação mostrando o que a IA deduziu do comprovante.
+ * Só exibe "Pagador (Quem enviou)" quando o tipo for "Recebidos".
  */
 function buildValueConfirmationPrompt(session) {
   const { analysis, tipoLancamento, categoria } = session;
   const monthInfo = extractMonthInfo(analysis.data_pagamento);
   const valorDetectado = analysis.valor_formatado || 'Não identificado';
+  const tipoFinal = tipoLancamento || analysis.tipo_lancamento || 'Gastos';
+  const categoriaFinal = categoria || analysis.categoria || 'Outros';
 
-  return (
-    `Valor? (Detectamos *${valorDetectado}* na nota em *${monthInfo.normalizedDate}*)\n\n` +
-    `📂 *Tipo:* ${tipoLancamento} | *Categoria:* ${categoria}\n` +
+  let details =
+    `🤖 *Comprovante Analisado pela IA:*\n\n` +
+    `📂 *Tipo:* ${tipoFinal}\n` +
+    `🏷️ *Categoria:* ${categoriaFinal}\n` +
     `💳 *Meio:* ${analysis.tipo_transacao || 'Outro'}\n` +
-    `📁 *Pasta no Drive:* ${monthInfo.monthFolderName}\n\n` +
-    `👉 Digite *Confirmar* (ou *Sim*) para salvar, digite outro valor (ex: *26.90*), ou altere a data (ex: *data 23/03/2026*).`
-  );
+    `💰 *Valor:* ${valorDetectado}\n` +
+    `📅 *Data do Pagamento:* ${monthInfo.normalizedDate}\n` +
+    `📁 *Pasta no Drive:* ${monthInfo.monthFolderName}`;
+
+  if (tipoFinal === 'Recebidos') {
+    details += `\n👤 *Pagador (Quem enviou):* ${analysis.pagador || 'Não identificado'}`;
+  }
+
+  details += `\n\n👉 Digite *Confirmar* (ou *Sim*) para salvar, digite outro valor (ex: *26.90*), ou peça qualquer alteração (ex: _"muda categoria para Transporte"_, _"é Recebidos"_, _"pagador: João"_).`;
+
+  return details;
 }
 
 /**
@@ -186,16 +189,16 @@ function buildValueConfirmationPrompt(session) {
  * no Google Drive e registrando a linha no Google Sheets.
  */
 async function finalizeAndSaveSession(sock, remoteJid, session, triggerMsg) {
-  const {
-    hasMedia,
-    buffer,
-    mediaInfo,
-    senderName,
-    senderPhone,
-    tipoLancamento,
-    categoria,
-    analysis,
-  } = session;
+  const { hasMedia, buffer, mediaInfo, analysis } = session;
+
+  const tipoLancamento =
+    session.tipoLancamento || analysis.tipo_lancamento || 'Gastos';
+  const categoria = session.categoria || analysis.categoria || 'Outros';
+
+  // Garante que pagador só é mantido quando for Recebidos
+  const pagadorRecebidos =
+    tipoLancamento === 'Recebidos' ? analysis.pagador || '' : '';
+  analysis.pagador = pagadorRecebidos;
 
   const monthInfo = extractMonthInfo(analysis.data_pagamento);
   analysis.data_pagamento = monthInfo.normalizedDate;
@@ -207,20 +210,14 @@ async function finalizeAndSaveSession(sock, remoteJid, session, triggerMsg) {
   let fileName = '';
   if (hasMedia && buffer && mediaInfo) {
     const cleanTipo = sanitizeFileName(tipoLancamento || 'Comprovante');
-    const cleanTarget = sanitizeFileName(
-      analysis.recebedor && analysis.recebedor !== 'Não identificado'
-        ? analysis.recebedor
-        : analysis.pagador && analysis.pagador !== 'Não identificado'
-          ? analysis.pagador
-          : senderName
-    );
+    const cleanCat = sanitizeFileName(categoria || 'Geral');
     const cleanValor = sanitizeFileName(
       analysis.valor_formatado && analysis.valor_formatado !== 'Não identificado'
         ? analysis.valor_formatado
         : 'sem_valor'
     );
 
-    fileName = `${cleanTipo}_${dateForFile}_${timePrefix}_${cleanTarget}_${cleanValor}.${mediaInfo.extension}`;
+    fileName = `${cleanTipo}_${cleanCat}_${dateForFile}_${timePrefix}_${cleanValor}.${mediaInfo.extension}`;
 
     await sock.sendMessage(remoteJid, {
       text: `Enviando comprovante para o Google Drive (Pasta: *${monthInfo.monthFolderName}*)...`,
@@ -233,14 +230,12 @@ async function finalizeAndSaveSession(sock, remoteJid, session, triggerMsg) {
 
   const receiptMetadata = {
     receivedAt,
-    senderName,
-    senderPhone,
+    ...analysis,
     tipo_lancamento: tipoLancamento,
     categoria,
+    pagador: pagadorRecebidos,
     mes_competencia: monthInfo.monthCompetencia,
     pasta_mes: monthInfo.monthFolderName,
-    ...analysis,
-    caption: mediaInfo?.caption || '',
   };
 
   console.log(
@@ -272,6 +267,10 @@ async function finalizeAndSaveSession(sock, remoteJid, session, triggerMsg) {
     `📅 *Data do Pagamento:* ${monthInfo.normalizedDate}\n` +
     `📁 *Pasta do Mês:* ${monthInfo.monthFolderName}`;
 
+  if (tipoLancamento === 'Recebidos' && pagadorRecebidos) {
+    finalMessage += `\n👤 *Pagador (Quem enviou):* ${pagadorRecebidos}`;
+  }
+
   if (hasMedia && driveFile.webViewLink) {
     finalMessage += `\n🔗 *Drive:* ${driveFile.webViewLink}`;
   }
@@ -291,7 +290,7 @@ function matchMenuOption(inputText, optionsMap) {
   if (optionsMap[clean]) return optionsMap[clean];
 
   const lower = clean.toLowerCase();
-  for (const [key, val] of Object.entries(optionsMap)) {
+  for (const [, val] of Object.entries(optionsMap)) {
     if (val.toLowerCase() === lower) return val;
   }
   return null;
@@ -350,7 +349,7 @@ async function startBot() {
     } else if (connection === 'open') {
       console.log('\n✅ BOT CONECTADO AO WHATSAPP COM SUCESSO!');
       console.log(
-        '👀 Envie /start ou mande diretamente a foto/PDF de um comprovante...\n'
+        '👀 Envie diretamente uma foto/PDF (a IA deduz Tipo e Categoria automaticamente) ou digite /start...\n'
       );
     }
   });
@@ -380,12 +379,8 @@ async function startBot() {
         const mediaInfo = extractMediaInfo(unwrapped);
         const textMessage = extractTextMessage(unwrapped);
 
-        const senderJid = isGroup ? msg.key.participant : remoteJid;
-        const senderPhone = formatPhoneNumber(senderJid);
-        const senderName = msg.pushName || senderPhone;
-
         // ====================================================================
-        // COMANDO /start (ou /cancelar)
+        // COMANDO /start (para registro manual passo a passo ou sem foto)
         // ====================================================================
         const lowerText = textMessage.toLowerCase();
         if (['/start', 'start', '/menu', 'menu', '/novo'].includes(lowerText)) {
@@ -394,12 +389,12 @@ async function startBot() {
             hasMedia: false,
             buffer: null,
             mediaInfo: null,
-            senderName,
-            senderPhone,
             tipoLancamento: null,
             categoria: null,
             analysis: {
               eh_comprovante: true,
+              tipo_lancamento: 'Gastos',
+              categoria: 'Outros',
               tipo_transacao: 'Outro',
               valor: null,
               valor_formatado: 'Não identificado',
@@ -408,8 +403,7 @@ async function startBot() {
                 hour: '2-digit',
                 minute: '2-digit',
               }),
-              pagador: senderName,
-              recebedor: 'Não identificado',
+              pagador: '',
               instituicao: 'Não identificada',
               id_transacao: 'Não identificado',
             },
@@ -423,19 +417,17 @@ async function startBot() {
           if (activeSessions.has(remoteJid)) {
             activeSessions.delete(remoteJid);
             await sock.sendMessage(remoteJid, {
-              text: '❌ Operação cancelada. Envie */start* ou uma foto quando quiser registrar novamente.',
+              text: '❌ Operação cancelada. Envie uma foto/PDF ou digite */start* quando quiser registrar novamente.',
             });
             continue;
           }
         }
 
         // ====================================================================
-        // RECEBIMENTO DE FOTO OU PDF
+        // RECEBIMENTO DE FOTO OU PDF (A IA DEDUZ TIPO E CATEGORIA AUTOMATICAMENTE)
         // ====================================================================
         if (mediaInfo) {
-          console.log(
-            `\n📥 Mídia recebida de ${senderName} (${senderPhone}) [${mediaInfo.mimeType}]`
-          );
+          console.log(`\n📥 Comprovante recebido [${mediaInfo.mimeType}]`);
 
           await sock.sendMessage(remoteJid, {
             text: 'Processando imagem, aguarda um momento...',
@@ -451,7 +443,9 @@ async function startBot() {
             }
           );
 
-          console.log('🤖 Analisando imagem/PDF com IA (Gemini Vision)...');
+          console.log(
+            '🤖 Analisando comprovante e deduzindo Tipo/Categoria com IA...'
+          );
           const analysis = await analyzeReceipt(buffer, mediaInfo.mimeType);
 
           if (config.bot.onlyReceipts && !analysis.eh_comprovante) {
@@ -465,33 +459,36 @@ async function startBot() {
           }
 
           const existingSession = activeSessions.get(remoteJid);
+          const deducedTipo =
+            existingSession?.tipoLancamento ||
+            analysis.tipo_lancamento ||
+            'Gastos';
+          const deducedCategoria =
+            existingSession?.categoria || analysis.categoria || 'Outros';
 
-          // Se o usuário já tinha iniciado via /start e escolhido o Tipo (Recebidos/Gastos/Investimentos)
-          if (existingSession && existingSession.tipoLancamento) {
-            existingSession.hasMedia = true;
-            existingSession.buffer = buffer;
-            existingSession.mediaInfo = mediaInfo;
-            existingSession.analysis = analysis;
-            existingSession.step = 'AWAITING_CATEGORIA';
-            activeSessions.set(remoteJid, existingSession);
-
-            await sock.sendMessage(remoteJid, { text: MENU_CATEGORIA });
-          } else {
-            // O usuário mandou a foto direto sem /start: guarda a foto e pergunta o Tipo primeiro
-            activeSessions.set(remoteJid, {
-              step: 'AWAITING_TIPO',
-              hasMedia: true,
-              buffer,
-              mediaInfo,
-              senderName,
-              senderPhone,
-              tipoLancamento: null,
-              categoria: null,
-              analysis,
-            });
-
-            await sock.sendMessage(remoteJid, { text: MENU_TIPO });
+          analysis.tipo_lancamento = deducedTipo;
+          analysis.categoria = deducedCategoria;
+          if (deducedTipo !== 'Recebidos') {
+            analysis.pagador = '';
           }
+
+          const newSession = {
+            step: 'AWAITING_CONFIRMACAO',
+            hasMedia: true,
+            buffer,
+            mediaInfo,
+            tipoLancamento: deducedTipo,
+            categoria: deducedCategoria,
+            analysis,
+          };
+
+          activeSessions.set(remoteJid, newSession);
+
+          await sock.sendMessage(
+            remoteJid,
+            { text: buildValueConfirmationPrompt(newSession) },
+            { quoted: msg }
+          );
           continue;
         }
 
@@ -504,34 +501,28 @@ async function startBot() {
 
         const session = activeSessions.get(remoteJid);
 
-        // ETAPA 1: Escolhendo Tipo (1 - Recebidos, 2 - Gastos, 3 - Investimentos)
+        // ETAPA 1 (Fluxo /start): Escolhendo Tipo (1 - Recebidos, 2 - Gastos, 3 - Investimentos)
         if (session.step === 'AWAITING_TIPO') {
           const chosenTipo = matchMenuOption(textMessage, TIPOS_REGISTRO);
           if (!chosenTipo) {
             await sock.sendMessage(remoteJid, {
-              text: `Opção inválida. Por favor, escolha um número de 1 a 3:\n\n${MENU_TIPO}`,
+              text: `Opção inválida. Escolha de 1 a 3:\n\n${MENU_TIPO}`,
             });
             continue;
           }
 
           session.tipoLancamento = chosenTipo;
+          session.analysis.tipo_lancamento = chosenTipo;
+          session.step = 'AWAITING_MEDIA';
+          activeSessions.set(remoteJid, session);
 
-          // Se já enviou a foto antes, pula direto para Categoria
-          if (session.hasMedia) {
-            session.step = 'AWAITING_CATEGORIA';
-            activeSessions.set(remoteJid, session);
-            await sock.sendMessage(remoteJid, { text: MENU_CATEGORIA });
-          } else {
-            session.step = 'AWAITING_MEDIA';
-            activeSessions.set(remoteJid, session);
-            await sock.sendMessage(remoteJid, {
-              text: 'Envie a foto da nota/cupom fiscal (ou envie *0* para continuar sem foto).',
-            });
-          }
+          await sock.sendMessage(remoteJid, {
+            text: 'Envie a foto da nota/cupom fiscal (ou envie *0* para continuar sem foto).',
+          });
           continue;
         }
 
-        // ETAPA 2: Aguardando Foto ou "0" para continuar sem foto
+        // ETAPA 2 (Fluxo /start): Aguardando Foto ou "0" para continuar sem foto
         if (session.step === 'AWAITING_MEDIA') {
           if (textMessage.trim() === '0') {
             session.hasMedia = false;
@@ -548,23 +539,16 @@ async function startBot() {
           continue;
         }
 
-        // ETAPA 3: Escolhendo Categoria (1 - Matéria-prima, 2 - Transporte, 3 - Alimentação, 4 - Outros)
+        // ETAPA 3 (Fluxo /start sem foto): Escolhendo Categoria
         if (session.step === 'AWAITING_CATEGORIA') {
           const chosenCat =
             matchMenuOption(textMessage, CATEGORIAS) || textMessage.trim();
           session.categoria = chosenCat;
+          session.analysis.categoria = chosenCat;
+          session.step = 'AWAITING_MEIO_PAGAMENTO';
+          activeSessions.set(remoteJid, session);
 
-          if (session.hasMedia) {
-            session.step = 'AWAITING_CONFIRMACAO';
-            activeSessions.set(remoteJid, session);
-            await sock.sendMessage(remoteJid, {
-              text: buildValueConfirmationPrompt(session),
-            });
-          } else {
-            session.step = 'AWAITING_MEIO_PAGAMENTO';
-            activeSessions.set(remoteJid, session);
-            await sock.sendMessage(remoteJid, { text: MENU_MEIO_PAGAMENTO });
-          }
+          await sock.sendMessage(remoteJid, { text: MENU_MEIO_PAGAMENTO });
           continue;
         }
 
@@ -601,12 +585,34 @@ async function startBot() {
             style: 'currency',
             currency: 'BRL',
           });
+
+          if (session.tipoLancamento === 'Recebidos') {
+            session.step = 'AWAITING_PAGADOR_SEM_FOTO';
+            activeSessions.set(remoteJid, session);
+            await sock.sendMessage(remoteJid, {
+              text: 'Quem enviou o valor (Pagador)? (Ou envie *0* para pular):',
+            });
+          } else {
+            session.step = 'AWAITING_DATA_SEM_FOTO';
+            activeSessions.set(remoteJid, session);
+            const todayStr = new Date().toLocaleDateString('pt-BR');
+            await sock.sendMessage(remoteJid, {
+              text: `Data do pagamento? (Envie *0* para hoje *${todayStr}* ou digite a data no formato *DD/MM/AAAA*):`,
+            });
+          }
+          continue;
+        }
+
+        // ETAPA 5.1 (Sem Foto - Apenas quando for Recebidos): Informando quem enviou o valor
+        if (session.step === 'AWAITING_PAGADOR_SEM_FOTO') {
+          session.analysis.pagador =
+            textMessage.trim() === '0' ? '' : textMessage.trim();
           session.step = 'AWAITING_DATA_SEM_FOTO';
           activeSessions.set(remoteJid, session);
 
           const todayStr = new Date().toLocaleDateString('pt-BR');
           await sock.sendMessage(remoteJid, {
-            text: `Data do pagamento? (Envie *0* para hoje *${todayStr}* ou digite a data no formato *DD/MM/AAAA*):`,
+            text: `Data do recebimento? (Envie *0* para hoje *${todayStr}* ou digite a data no formato *DD/MM/AAAA*):`,
           });
           continue;
         }
@@ -626,7 +632,7 @@ async function startBot() {
           continue;
         }
 
-        // ETAPA FINAL (Com Foto): Confirmação ou edição do Valor / Data lidos na nota
+        // ETAPA FINAL (Com Foto): Confirmação ou edição dos dados deduzidos pela IA
         if (session.step === 'AWAITING_CONFIRMACAO') {
           const decision = await interpretConfirmationReply(
             textMessage,
@@ -635,6 +641,13 @@ async function startBot() {
 
           if (decision.dados_atualizados) {
             session.analysis = decision.dados_atualizados;
+            if (decision.dados_atualizados.tipo_lancamento) {
+              session.tipoLancamento =
+                decision.dados_atualizados.tipo_lancamento;
+            }
+            if (decision.dados_atualizados.categoria) {
+              session.categoria = decision.dados_atualizados.categoria;
+            }
           }
 
           if (decision.acao === 'CONFIRMAR') {

@@ -15,7 +15,7 @@ Bot automatizado em **Node.js** que conecta ao WhatsApp via **QR Code** (usando 
 - 📁 **Pastas Mensais Automáticas por Competência (Data do Pagamento)**:
   - Se você enviar hoje (ex: mês 11) um comprovante pago em `23/03/2026`, o bot identifica o mês `03/2026`, verifica se a pasta **`2026-03 (Março)`** já existe no Google Drive (criando-a caso não exista) e salva o arquivo dentro dela.
 - 📊 **Registro Completo no Google Sheets + Backup Excel Local**:
-  - Grava `Mês Competência`, `Data do Pagamento`, `Hora`, `Tipo`, `Categoria`, `Meio de Pagamento`, `Valor (R$)`, `Pagador`, `Recebedor`, `Instituição`, `ID/Autenticação` e `Link do Comprovante no Drive`.
+  - Grava `Mês Competência`, `Data do Pagamento`, `Hora`, `Tipo`, `Categoria`, `Meio de Pagamento`, `Valor (R$)`, `Pagador (Recebidos)`, `Instituição`, `ID/Autenticação` e `Link do Comprovante no Drive`.
   - Mantém cópia local das fotos em `data/fotos/<Mês>/` e da planilha em `data/comprovantes_backup.csv`.
 
 ---

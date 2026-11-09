@@ -28,12 +28,9 @@ const CABECALHOS_PLANILHA = [
   'Categoria',
   'Meio de Pagamento',
   'Valor (R$)',
-  'Pagador',
-  'Recebedor',
+  'Pagador (Recebidos)',
   'Banco / Instituição',
   'ID / Autenticação',
-  'Nome Contato (WhatsApp)',
-  'Telefone Remetente',
   'Data/Hora Registro',
   'Link do Comprovante',
 ];
@@ -71,9 +68,7 @@ function extractMonthInfo(dataPagamentoStr) {
 
   const raw = String(dataPagamentoStr || '').trim();
 
-  // Tenta casar DD/MM/AAAA ou DD-MM-AAAA ou DD/MM/AA
   const brMatch = raw.match(/^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?$/);
-  // Tenta casar AAAA-MM-DD
   const isoMatch = raw.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
 
   if (brMatch) {
@@ -217,6 +212,10 @@ async function uploadToDrive(
   receiptData.mes_competencia = monthInfo.monthCompetencia;
   receiptData.data_pagamento = monthInfo.normalizedDate;
   receiptData.pasta_mes = monthInfo.monthFolderName;
+  receiptData.pagador =
+    receiptData.tipo_lancamento === 'Recebidos'
+      ? receiptData.pagador || ''
+      : '';
 
   const localPhotoPath = saveLocalPhotoBackup(
     fileBuffer,
@@ -254,6 +253,8 @@ async function uploadToDrive(
  */
 async function appendReceiptToSheet(data) {
   const monthInfo = extractMonthInfo(data.data_pagamento);
+  const pagadorRecebidos =
+    data.tipo_lancamento === 'Recebidos' ? data.pagador || '' : '';
 
   const rowValues = [
     data.mes_competencia || monthInfo.monthCompetencia,
@@ -265,12 +266,9 @@ async function appendReceiptToSheet(data) {
     data.valor !== null && data.valor !== undefined
       ? data.valor
       : data.valor_formatado || 'Não identificado',
-    data.pagador || 'Não identificado',
-    data.recebedor || 'Não identificado',
+    pagadorRecebidos,
     data.instituicao || 'Não identificada',
     data.id_transacao || 'Não identificado',
-    data.senderName || '',
-    data.senderPhone || '',
     data.receivedAt || new Date().toLocaleString('pt-BR'),
     data.driveLink || 'Sem comprovante',
   ];
