@@ -156,8 +156,57 @@ function extractTextMessage(msgContent) {
 }
 
 /**
+ * Formata a lista de investimentos quando houver 1 ou múltiplos ativos.
+ */
+function formatInvestmentItemsList(analysis) {
+  const itens = Array.isArray(analysis.itens_investimento)
+    ? analysis.itens_investimento
+    : [];
+
+  if (itens.length === 0) {
+    return `• *${analysis.categoria || 'Investimento'}* — *${analysis.valor_formatado || 'Não identificado'}*`;
+  }
+
+  return itens
+    .map((item, idx) => {
+      const cat =
+        item.categoria && item.categoria !== item.nome_ativo
+          ? ` (${item.categoria})`
+          : '';
+      const val =
+        item.valor_formatado ||
+        (typeof item.valor === 'number'
+          ? item.valor.toLocaleString('pt-BR', {
+              style: 'currency',
+              currency: 'BRL',
+            })
+          : 'Não identificado');
+      return `${idx + 1}. *${item.nome_ativo || 'Ativo'}*${cat} — *${val}*`;
+    })
+    .join('\n');
+}
+
+/**
+ * Monta a pergunta de qual banco está sendo depositado o investimento.
+ */
+function buildAskInvestmentBankPrompt(session) {
+  const { analysis } = session;
+  const itensText = formatInvestmentItemsList(analysis);
+  const totalText = analysis.valor_formatado || 'Não identificado';
+
+  return (
+    `📈 *Investimento(s) Identificado(s) pela IA:*\n\n` +
+    `${itensText}\n` +
+    `💰 *Total:* ${totalText}\n\n` +
+    `🏦 *Em qual banco ou corretora está sendo depositado este investimento?*\n` +
+    `_(Digite o nome da instituição, ex: XP, Nubank, Itaú, BTG, Inter)_`
+  );
+}
+
+/**
  * Monta a mensagem de confirmação mostrando o que a IA deduziu do comprovante.
  * Só exibe "Pagador (Quem enviou)" quando o tipo for "Recebidos".
+ * Quando for "Investimentos", mostra a lista de investimentos e o banco informado.
  */
 function buildValueConfirmationPrompt(session) {
   const { analysis, tipoLancamento, categoria } = session;
@@ -165,6 +214,21 @@ function buildValueConfirmationPrompt(session) {
   const valorDetectado = analysis.valor_formatado || 'Não identificado';
   const tipoFinal = tipoLancamento || analysis.tipo_lancamento || 'Gastos';
   const categoriaFinal = categoria || analysis.categoria || 'Outros';
+
+  if (tipoFinal === 'Investimentos') {
+    const itensText = formatInvestmentItemsList(analysis);
+    return (
+      `🤖 *Resumo do(s) Investimento(s):*\n\n` +
+      `📂 *Tipo:* Investimentos\n` +
+      `🏦 *Banco / Corretora:* ${analysis.instituicao || 'Não informado'}\n` +
+      `📅 *Data:* ${monthInfo.normalizedDate}\n` +
+      `📁 *Pasta no Drive:* ${monthInfo.monthFolderName}\n\n` +
+      `📊 *Composição a ser registrada na planilha:*\n` +
+      `${itensText}\n` +
+      `💰 *Total:* ${valorDetectado}\n\n` +
+      `👉 Digite *Confirmar* (ou *Sim*) para salvar todos os itens, ou peça qualquer alteração (ex: _"muda banco para BTG"_, _"data 15/03/2026"_, _"muda valor do CDB para 90000"_).`
+    );
+  }
 
   let details =
     `🤖 *Comprovante Analisado pela IA:*\n\n` +
@@ -186,7 +250,7 @@ function buildValueConfirmationPrompt(session) {
 
 /**
  * Finaliza a sessão salvando o comprovante na pasta do mês correspondente ao pagamento
- * no Google Drive e registrando a linha no Google Sheets.
+ * no Google Drive e registrando 1 ou múltiplas linhas no Google Sheets.
  */
 async function finalizeAndSaveSession(sock, remoteJid, session, triggerMsg) {
   const { hasMedia, buffer, mediaInfo, analysis } = session;
@@ -210,7 +274,11 @@ async function finalizeAndSaveSession(sock, remoteJid, session, triggerMsg) {
   let fileName = '';
   if (hasMedia && buffer && mediaInfo) {
     const cleanTipo = sanitizeFileName(tipoLancamento || 'Comprovante');
-    const cleanCat = sanitizeFileName(categoria || 'Geral');
+    const cleanCat = sanitizeFileName(
+      tipoLancamento === 'Investimentos'
+        ? analysis.instituicao || 'Investimento'
+        : categoria || 'Geral'
+    );
     const cleanValor = sanitizeFileName(
       analysis.valor_formatado && analysis.valor_formatado !== 'Não identificado'
         ? analysis.valor_formatado
@@ -258,17 +326,30 @@ async function finalizeAndSaveSession(sock, remoteJid, session, triggerMsg) {
     `✅ Registro concluído com sucesso! Pasta: ${monthInfo.monthFolderName}`
   );
 
-  let finalMessage =
-    `Registrado com sucesso ✅\n\n` +
-    `📂 *Tipo:* ${tipoLancamento}\n` +
-    `🏷️ *Categoria:* ${categoria}\n` +
-    `💳 *Meio:* ${analysis.tipo_transacao || 'Outro'}\n` +
-    `💰 *Valor:* ${analysis.valor_formatado || 'Não identificado'}\n` +
-    `📅 *Data do Pagamento:* ${monthInfo.normalizedDate}\n` +
-    `📁 *Pasta do Mês:* ${monthInfo.monthFolderName}`;
+  let finalMessage = '';
+  if (tipoLancamento === 'Investimentos') {
+    const itensText = formatInvestmentItemsList(analysis);
+    finalMessage =
+      `Registrado com sucesso ✅\n\n` +
+      `📂 *Tipo:* Investimentos\n` +
+      `🏦 *Banco / Corretora:* ${analysis.instituicao || 'Não informado'}\n` +
+      `📊 *Investimentos registrados:*\n${itensText}\n` +
+      `💰 *Total:* ${analysis.valor_formatado || 'Não identificado'}\n` +
+      `📅 *Data:* ${monthInfo.normalizedDate}\n` +
+      `📁 *Pasta do Mês:* ${monthInfo.monthFolderName}`;
+  } else {
+    finalMessage =
+      `Registrado com sucesso ✅\n\n` +
+      `📂 *Tipo:* ${tipoLancamento}\n` +
+      `🏷️ *Categoria:* ${categoria}\n` +
+      `💳 *Meio:* ${analysis.tipo_transacao || 'Outro'}\n` +
+      `💰 *Valor:* ${analysis.valor_formatado || 'Não identificado'}\n` +
+      `📅 *Data do Pagamento:* ${monthInfo.normalizedDate}\n` +
+      `📁 *Pasta do Mês:* ${monthInfo.monthFolderName}`;
 
-  if (tipoLancamento === 'Recebidos' && pagadorRecebidos) {
-    finalMessage += `\n👤 *Pagador (Quem enviou):* ${pagadorRecebidos}`;
+    if (tipoLancamento === 'Recebidos' && pagadorRecebidos) {
+      finalMessage += `\n👤 *Pagador (Quem enviou):* ${pagadorRecebidos}`;
+    }
   }
 
   if (hasMedia && driveFile.webViewLink) {
@@ -294,6 +375,19 @@ function matchMenuOption(inputText, optionsMap) {
     if (val.toLowerCase() === lower) return val;
   }
   return null;
+}
+
+/**
+ * Coloca a sessão na primeira etapa do preenchimento manual (usado quando a IA está indisponível)
+ * e devolve a pergunta a ser enviada. A foto continua na sessão e é salva no final.
+ */
+function advanceToManualDetails(session) {
+  if (session.tipoLancamento === 'Investimentos') {
+    session.step = 'AWAITING_BANCO_SEM_FOTO';
+    return '🏦 *Em qual banco ou corretora está sendo depositado este investimento?*';
+  }
+  session.step = 'AWAITING_CATEGORIA';
+  return MENU_CATEGORIA;
 }
 
 async function startBot() {
@@ -349,7 +443,7 @@ async function startBot() {
     } else if (connection === 'open') {
       console.log('\n✅ BOT CONECTADO AO WHATSAPP COM SUCESSO!');
       console.log(
-        '👀 Envie diretamente uma foto/PDF (a IA deduz Tipo e Categoria automaticamente) ou digite /start...\n'
+        '👀 Envie diretamente uma foto/PDF (a IA deduz Tipo, Categoria e múltiplos Investimentos) ou digite /start...\n'
       );
     }
   });
@@ -406,6 +500,7 @@ async function startBot() {
               pagador: '',
               instituicao: 'Não identificada',
               id_transacao: 'Não identificado',
+              itens_investimento: [],
             },
           });
 
@@ -424,7 +519,7 @@ async function startBot() {
         }
 
         // ====================================================================
-        // RECEBIMENTO DE FOTO OU PDF (A IA DEDUZ TIPO E CATEGORIA AUTOMATICAMENTE)
+        // RECEBIMENTO DE FOTO OU PDF (A IA DEDUZ TIPO, CATEGORIA E INVESTIMENTOS)
         // ====================================================================
         if (mediaInfo) {
           console.log(`\n📥 Comprovante recebido [${mediaInfo.mimeType}]`);
@@ -444,16 +539,56 @@ async function startBot() {
           );
 
           console.log(
-            '🤖 Analisando comprovante e deduzindo Tipo/Categoria com IA...'
+            '🤖 Analisando comprovante e deduzindo Tipo/Categoria/Investimentos com IA...'
           );
           const analysis = await analyzeReceipt(buffer, mediaInfo.mimeType);
+
+          // IA indisponível (cota esgotada ou falha): mantém a foto e segue pelo preenchimento manual
+          if (analysis.erro_ia) {
+            const previous = activeSessions.get(remoteJid);
+            const manualSession = {
+              step: 'AWAITING_TIPO',
+              hasMedia: true,
+              manualFallback: true,
+              buffer,
+              mediaInfo,
+              tipoLancamento: previous?.tipoLancamento || null,
+              categoria: null,
+              analysis,
+            };
+
+            const aviso =
+              `⚠️ ${analysis.erro_ia_mensagem}\n` +
+              `Sem problema: a foto ficou guardada e vamos preencher os dados manualmente.`;
+
+            // Se o tipo já foi escolhido no /start, pula direto para os detalhes
+            if (manualSession.tipoLancamento) {
+              manualSession.analysis.tipo_lancamento =
+                manualSession.tipoLancamento;
+              const nextText = advanceToManualDetails(manualSession);
+              activeSessions.set(remoteJid, manualSession);
+              await sock.sendMessage(
+                remoteJid,
+                { text: `${aviso}\n\n${nextText}` },
+                { quoted: msg }
+              );
+            } else {
+              activeSessions.set(remoteJid, manualSession);
+              await sock.sendMessage(
+                remoteJid,
+                { text: `${aviso}\n\n${MENU_TIPO}` },
+                { quoted: msg }
+              );
+            }
+            continue;
+          }
 
           if (config.bot.onlyReceipts && !analysis.eh_comprovante) {
             console.log(
               '⏭️  Imagem ignorada: A IA identificou que não é um comprovante.'
             );
             await sock.sendMessage(remoteJid, {
-              text: '⚠️ Não identifiquei esta imagem como um comprovante ou nota fiscal.',
+              text: '⚠️ Não identifiquei esta imagem como um comprovante, nota fiscal ou investimento.',
             });
             continue;
           }
@@ -470,6 +605,28 @@ async function startBot() {
           analysis.categoria = deducedCategoria;
           if (deducedTipo !== 'Recebidos') {
             analysis.pagador = '';
+          }
+
+          // Se for Investimentos, pergunta sempre qual banco/corretora está sendo depositado!
+          if (deducedTipo === 'Investimentos') {
+            const newSession = {
+              step: 'AWAITING_BANCO_INVESTIMENTO',
+              hasMedia: true,
+              buffer,
+              mediaInfo,
+              tipoLancamento: deducedTipo,
+              categoria: deducedCategoria,
+              analysis,
+            };
+
+            activeSessions.set(remoteJid, newSession);
+
+            await sock.sendMessage(
+              remoteJid,
+              { text: buildAskInvestmentBankPrompt(newSession) },
+              { quoted: msg }
+            );
+            continue;
           }
 
           const newSession = {
@@ -501,6 +658,18 @@ async function startBot() {
 
         const session = activeSessions.get(remoteJid);
 
+        // ETAPA ESPECIAL (Investimentos com Foto): Usuário respondeu o nome do Banco/Corretora
+        if (session.step === 'AWAITING_BANCO_INVESTIMENTO') {
+          session.analysis.instituicao = textMessage.trim();
+          session.step = 'AWAITING_CONFIRMACAO';
+          activeSessions.set(remoteJid, session);
+
+          await sock.sendMessage(remoteJid, {
+            text: buildValueConfirmationPrompt(session),
+          });
+          continue;
+        }
+
         // ETAPA 1 (Fluxo /start): Escolhendo Tipo (1 - Recebidos, 2 - Gastos, 3 - Investimentos)
         if (session.step === 'AWAITING_TIPO') {
           const chosenTipo = matchMenuOption(textMessage, TIPOS_REGISTRO);
@@ -513,11 +682,20 @@ async function startBot() {
 
           session.tipoLancamento = chosenTipo;
           session.analysis.tipo_lancamento = chosenTipo;
+
+          // A foto já foi recebida, mas a IA não leu: vai direto para o preenchimento manual
+          if (session.manualFallback) {
+            const nextText = advanceToManualDetails(session);
+            activeSessions.set(remoteJid, session);
+            await sock.sendMessage(remoteJid, { text: nextText });
+            continue;
+          }
+
           session.step = 'AWAITING_MEDIA';
           activeSessions.set(remoteJid, session);
 
           await sock.sendMessage(remoteJid, {
-            text: 'Envie a foto da nota/cupom fiscal (ou envie *0* para continuar sem foto).',
+            text: 'Envie a foto da nota/comprovante (ou envie *0* para continuar sem foto).',
           });
           continue;
         }
@@ -526,16 +704,45 @@ async function startBot() {
         if (session.step === 'AWAITING_MEDIA') {
           if (textMessage.trim() === '0') {
             session.hasMedia = false;
-            session.step = 'AWAITING_CATEGORIA';
-            activeSessions.set(remoteJid, session);
-            await sock.sendMessage(remoteJid, {
-              text: `Continuando sem comprovante.\n\n${MENU_CATEGORIA}`,
-            });
+            if (session.tipoLancamento === 'Investimentos') {
+              session.step = 'AWAITING_BANCO_SEM_FOTO';
+              activeSessions.set(remoteJid, session);
+              await sock.sendMessage(remoteJid, {
+                text: 'Continuando sem comprovante.\n\n🏦 *Em qual banco ou corretora está sendo depositado este investimento?*',
+              });
+            } else {
+              session.step = 'AWAITING_CATEGORIA';
+              activeSessions.set(remoteJid, session);
+              await sock.sendMessage(remoteJid, {
+                text: `Continuando sem comprovante.\n\n${MENU_CATEGORIA}`,
+              });
+            }
           } else {
             await sock.sendMessage(remoteJid, {
-              text: 'Por favor, envie uma *foto/PDF* da nota/cupom fiscal ou envie *0* para continuar sem foto.',
+              text: 'Por favor, envie uma *foto/PDF* do comprovante ou envie *0* para continuar sem foto.',
             });
           }
+          continue;
+        }
+
+        // ETAPA 2.1 (Fluxo /start sem foto - Investimentos): Banco -> Nome do Ativo
+        if (session.step === 'AWAITING_BANCO_SEM_FOTO') {
+          session.analysis.instituicao = textMessage.trim();
+          session.step = 'AWAITING_ATIVO_SEM_FOTO';
+          activeSessions.set(remoteJid, session);
+          await sock.sendMessage(remoteJid, {
+            text: 'Qual o ativo/tipo de investimento? (ex: *CDB*, *Tesouro Direto*, *Fundo*, *Ações*):',
+          });
+          continue;
+        }
+
+        if (session.step === 'AWAITING_ATIVO_SEM_FOTO') {
+          session.categoria = textMessage.trim();
+          session.analysis.categoria = textMessage.trim();
+          session.analysis.tipo_transacao = 'Aplicação';
+          session.step = 'AWAITING_VALOR_SEM_FOTO';
+          activeSessions.set(remoteJid, session);
+          await sock.sendMessage(remoteJid, { text: 'Valor investido?' });
           continue;
         }
 

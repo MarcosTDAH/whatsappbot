@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * PONTE PESSOAL GOOGLE DRIVE + GOOGLE SHEETS (COM PASTAS MENSAIS AUTOMÁTICAS)
+ * PONTE PESSOAL GOOGLE DRIVE + GOOGLE SHEETS (COM PASTAS MENSAIS E MÚLTIPLOS INVESTIMENTOS)
  * ============================================================================
  *
  * PASSO A PASSO PARA ATUALIZAR NO SEU GOOGLE SHEETS:
@@ -61,7 +61,7 @@ function doGet() {
   return ContentService.createTextOutput(
     JSON.stringify({
       ok: true,
-      message: 'Ponte Google Drive + Google Sheets (Pastas Mensais) ativa e funcionando!',
+      message: 'Ponte Google Drive + Google Sheets (Pastas Mensais + Múltiplos Investimentos) ativa!',
     })
   ).setMimeType(ContentService.MimeType.JSON);
 }
@@ -112,6 +112,7 @@ function doPost(e) {
     const sheetId = payload.sheetId || DEFAULT_SHEET_ID;
     const tabName = payload.tabName || DEFAULT_TAB_NAME;
     const d = payload.data || {};
+    const rowsList = Array.isArray(payload.rows) && payload.rows.length > 0 ? payload.rows : [d];
 
     // Determina a pasta do mês pela data em que o comprovante foi pago (ex: 23/03/2026 -> 2026-03 (Março))
     const monthFolderName =
@@ -162,26 +163,29 @@ function doPost(e) {
         .setFontWeight('bold');
     }
 
-    const pagadorRecebidos =
-      d.tipo_lancamento === 'Recebidos' ? d.pagador || '' : '';
+    // 3. Adiciona 1 ou múltiplas linhas (para quando houver múltiplos investimentos na mesma imagem)
+    for (var i = 0; i < rowsList.length; i++) {
+      var item = rowsList[i] || {};
+      var pagadorRecebidos =
+        item.tipo_lancamento === 'Recebidos' ? item.pagador || '' : '';
 
-    // 3. Adiciona a linha com os dados completos do lançamento
-    sheet.appendRow([
-      d.mes_competencia || monthFolderName.slice(0, 7),
-      d.data_pagamento || 'Não identificada',
-      d.hora_pagamento || '',
-      d.tipo_lancamento || 'Gastos',
-      d.categoria || 'Outros',
-      d.tipo_transacao || 'Outro',
-      d.valor !== null && d.valor !== undefined
-        ? d.valor
-        : d.valor_formatado || 'Não identificado',
-      pagadorRecebidos,
-      d.instituicao || 'Não identificada',
-      d.id_transacao || 'Não identificado',
-      d.receivedAt || new Date().toLocaleString('pt-BR'),
-      driveUrl,
-    ]);
+      sheet.appendRow([
+        item.mes_competencia || d.mes_competencia || monthFolderName.slice(0, 7),
+        item.data_pagamento || d.data_pagamento || 'Não identificada',
+        item.hora_pagamento || d.hora_pagamento || '',
+        item.tipo_lancamento || d.tipo_lancamento || 'Gastos',
+        item.categoria || d.categoria || 'Outros',
+        item.tipo_transacao || d.tipo_transacao || 'Outro',
+        item.valor !== null && item.valor !== undefined
+          ? item.valor
+          : item.valor_formatado || 'Não identificado',
+        pagadorRecebidos,
+        item.instituicao || d.instituicao || 'Não identificada',
+        item.id_transacao || d.id_transacao || 'Não identificado',
+        item.receivedAt || d.receivedAt || new Date().toLocaleString('pt-BR'),
+        driveUrl,
+      ]);
+    }
 
     return ContentService.createTextOutput(
       JSON.stringify({
@@ -190,6 +194,7 @@ function doPost(e) {
         name: fileName,
         webViewLink: driveUrl,
         monthFolderName: monthFolderName,
+        rowsAdded: rowsList.length,
       })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {

@@ -107,6 +107,50 @@ function extractMonthInfo(dataPagamentoStr) {
 }
 
 /**
+ * Expande um registro em 1 ou múltiplas linhas de dados (quando houver mais de 1 investimento na mesma foto).
+ */
+function expandReceiptRows(data) {
+  const isInvestimento = data.tipo_lancamento === 'Investimentos';
+  const itens = Array.isArray(data.itens_investimento)
+    ? data.itens_investimento
+    : [];
+
+  if (isInvestimento && itens.length > 0) {
+    return itens.map((item) => {
+      const catLabel =
+        item.nome_ativo && item.categoria && item.nome_ativo !== item.categoria
+          ? `${item.nome_ativo} (${item.categoria})`
+          : item.nome_ativo || item.categoria || data.categoria || 'Investimento';
+
+      const itemValor = item.valor ?? data.valor;
+      const itemValorFormatado =
+        item.valor_formatado ||
+        (typeof itemValor === 'number'
+          ? itemValor.toLocaleString('pt-BR', {
+              style: 'currency',
+              currency: 'BRL',
+            })
+          : data.valor_formatado || 'Não identificado');
+
+      return {
+        ...data,
+        categoria: catLabel,
+        valor: itemValor,
+        valor_formatado: itemValorFormatado,
+        pagador: '',
+      };
+    });
+  }
+
+  return [
+    {
+      ...data,
+      pagador: data.tipo_lancamento === 'Recebidos' ? data.pagador || '' : '',
+    },
+  ];
+}
+
+/**
  * Salva uma cópia local da foto na pasta data/fotos/<monthFolderName>/
  */
 function saveLocalPhotoBackup(fileBuffer, fileName, monthFolderName) {
@@ -133,8 +177,7 @@ function saveLocalPhotoBackup(fileBuffer, fileName, monthFolderName) {
 }
 
 /**
- * Envia a foto (opcional) + dados da planilha para o Google Apps Script,
- * que verifica/cria a pasta do mês no Google Drive e adiciona a linha no Google Sheets.
+ * Envia a foto (opcional) + dados da planilha (1 ou múltiplas linhas de investimentos) para o Google Apps Script.
  */
 async function sendViaAppsScript(
   fileBuffer,
@@ -143,6 +186,8 @@ async function sendViaAppsScript(
   receiptData,
   monthFolderName
 ) {
+  const expandedRows = expandReceiptRows(receiptData);
+
   const payload = {
     folderId: config.google.driveFolderId,
     sheetId: config.google.sheetsId,
@@ -152,7 +197,8 @@ async function sendViaAppsScript(
     fileName: fileName || '',
     mimeType: mimeType || '',
     fileBase64: fileBuffer ? fileBuffer.toString('base64') : '',
-    data: receiptData || {},
+    data: expandedRows[0] || receiptData || {},
+    rows: expandedRows,
   };
 
   const response = await fetch(config.google.appsScriptUrl, {
@@ -249,36 +295,39 @@ async function uploadToDrive(
 }
 
 /**
- * Salva o backup local em CSV (compatível com Excel) e verifica se já foi gravado no Google Sheets.
+ * Salva o backup local em CSV (compatível com Excel) para cada linha (suportando múltiplos investimentos).
  */
 async function appendReceiptToSheet(data) {
   const monthInfo = extractMonthInfo(data.data_pagamento);
-  const pagadorRecebidos =
-    data.tipo_lancamento === 'Recebidos' ? data.pagador || '' : '';
+  const expandedRows = expandReceiptRows(data);
 
-  const rowValues = [
-    data.mes_competencia || monthInfo.monthCompetencia,
-    data.data_pagamento || monthInfo.normalizedDate,
-    data.hora_pagamento || '',
-    data.tipo_lancamento || 'Gastos',
-    data.categoria || 'Outros',
-    data.tipo_transacao || 'Outro',
-    data.valor !== null && data.valor !== undefined
-      ? data.valor
-      : data.valor_formatado || 'Não identificado',
-    pagadorRecebidos,
-    data.instituicao || 'Não identificada',
-    data.id_transacao || 'Não identificado',
-    data.receivedAt || new Date().toLocaleString('pt-BR'),
-    data.driveLink || 'Sem comprovante',
-  ];
+  for (const row of expandedRows) {
+    const pagadorRecebidos =
+      row.tipo_lancamento === 'Recebidos' ? row.pagador || '' : '';
 
-  // Salva sempre uma cópia local em CSV (compatível com Excel)
-  saveLocalExcelBackup(rowValues);
+    const rowValues = [
+      row.mes_competencia || monthInfo.monthCompetencia,
+      row.data_pagamento || monthInfo.normalizedDate,
+      row.hora_pagamento || '',
+      row.tipo_lancamento || 'Gastos',
+      row.categoria || 'Outros',
+      row.tipo_transacao || 'Outro',
+      row.valor !== null && row.valor !== undefined
+        ? row.valor
+        : row.valor_formatado || 'Não identificado',
+      pagadorRecebidos,
+      row.instituicao || 'Não identificada',
+      row.id_transacao || 'Não identificado',
+      row.receivedAt || new Date().toLocaleString('pt-BR'),
+      data.driveLink || 'Sem comprovante',
+    ];
+
+    saveLocalExcelBackup(rowValues);
+  }
 
   if (!lastUploadedViaAppsScript) {
     console.log(
-      '💾 Registro salvo na planilha Excel local: data/comprovantes_backup.csv'
+      `💾 ${expandedRows.length} linha(s) salva(s) na planilha Excel local: data/comprovantes_backup.csv`
     );
   }
 }
@@ -314,6 +363,7 @@ function saveLocalExcelBackup(rowValues) {
 
 module.exports = {
   extractMonthInfo,
+  expandReceiptRows,
   uploadToDrive,
   appendReceiptToSheet,
 };
